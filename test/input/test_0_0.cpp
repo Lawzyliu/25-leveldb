@@ -1,94 +1,129 @@
 #include <iostream>
 #include <string>
-#include <leveldb/db.h>
+#include <fstream>
+#include <vector>
+#include <sstream>
 #include <sys/time.h>
 
-using namespace std;
-#define LENGTH 256
-#define NUM_STRINGS 1000000
-#define NUM_READ 10000
+#include <leveldb/db.h>
 
-// 生成有序字符序列
-void generateOrderedString(char *str, int length, int suffix) {
-    int i, j;
-    for (i = 0, j = 0; i < length - 1; ++i, ++j) {
-        // 根据你的要求排列字符，这里使用了简单的循环
-        str[i] = 'a' + (j % 26);
-    }
-    str[length - 1] = '\0';
-    
-    // 添加唯一的后缀
-    sprintf(str + length - 10, "%09d", suffix); // 为后缀留出9位数字空间
-}
+#ifndef CMAKELISTS_PATH
+#define CMAKELISTS_PATH "."
+#endif
 
-int main()
-{
-    leveldb::DB *db;
-    leveldb::Options options;
-    options.create_if_missing = true;
-    leveldb::Status status = leveldb::DB::Open(options, "/home/user/SSD/disk09/testdb", &db);
-    cout <<"status:" << status.ok() << endl;
-    if(!status.ok()){
-        return 1;
-    }
+static const std::string base64_chars = 
+             "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+             "abcdefghijklmnopqrstuvwxyz"
+             "0123456789+/";
 
-    char **strings = (char **)malloc(NUM_STRINGS * sizeof(char *));
-    if (strings == NULL) {
-        fprintf(stderr, "Memory allocation failed.\n");
-        return 1;
-    }
-    
-    
-    // 生成一百万个有序字符串
-    for (int i = 0; i < NUM_STRINGS; ++i) {
-        strings[i] = (char *)malloc((LENGTH + 1) * sizeof(char));
-        if (strings[i] == NULL) {
-            fprintf(stderr, "Memory allocation failed.\n");
-            return 1;
-        }
-        generateOrderedString(strings[i], LENGTH, i);
-    }
-    string get;
-    int cnt = 0;
-    srand(1);
-    struct timeval start,end;
-    long mtime,seconds,useconds;
-    gettimeofday(&start,NULL);
-    for(int i = 0; i < NUM_STRINGS; i++) {
-        string key = strings[i];
-        string value = strings[i];
-        leveldb::Status s = db->Put(leveldb::WriteOptions(), key, value);
-        if(s.ok()) {
-            cnt++;
-        }
-    }
-    gettimeofday(&end,NULL);
-    seconds = end.tv_sec - start.tv_sec;
-    useconds = end.tv_usec - start.tv_usec;
-    mtime = ((seconds) * 1000 + useconds / 1000.0) + 0.5;
-    std::cout<<"mtime:"<<mtime<<std::endl;
-    
+struct YCSBDataset{
+    enum Operation {
+        PUT,
+        GET
+    };
+
+    Operation op;
+    std::string key;
     std::string value;
-    gettimeofday(&start,NULL);
-    for(int i = 0; i < NUM_READ; i++) {
-        leveldb::Status s = db->Get(leveldb::ReadOptions(), strings[rand()%NUM_READ], &value);
-        if(s.ok()) {
-            cnt++;
+
+    YCSBDataset(const std::string& operation, const std::string& key, const std::string& value)
+        : key(key), value(Base64Decode(value)) {
+            if (operation == "put") {
+                op = PUT;
+            } else if (operation == "get") {
+                op = GET;
+            } else {
+                throw std::invalid_argument("Invalid operation: " + operation);
+            }
+        }
+    
+    std::string Base64Decode(const std::string &in) {
+        std::string out;
+        std::vector<int> T(256, -1);
+        for (int i = 0; i < 64; i++) T[base64_chars[i]] = i;
+        int val = 0, valb = -8;
+        for (unsigned char c : in) {
+            if (T[c] == -1) break;
+            val = (val << 6) + T[c];
+            valb += 6;
+            if (valb >= 0) {
+                out.push_back(char((val >> valb) & 0xFF));
+                valb -= 8;
+            }
+        }
+        return out;
+    }
+};
+
+int main() {
+    const std::string dbName = "/home/user/SSD/disk09/testdb";
+    leveldb::Options options;
+    leveldb::DestroyDB(dbName, options);
+    leveldb::DB* db;
+    options.create_if_missing = true;
+    leveldb::Status status = leveldb::DB::Open(options, dbName, &db);
+
+    const std::string dataset_path = "/home/user/cassius_leveldb/benchmarks/ycsb_dataset_KV1K_1_1R.csv";
+    std::ifstream input(dataset_path);
+    if(!input.is_open()) {
+        std::cerr << "Error: could not open file " << dataset_path << std::endl;
+        return 1;
+    }
+    std::string line;
+    std::getline(input, line); // skip header
+
+    std::string operation;
+    std::string key;
+    std::string value;
+
+    std::vector<YCSBDataset> dataset;
+
+    while (std::getline(input, line)) {
+        std::stringstream ss(line);
+        if (std::getline(ss, operation, ',')
+            && std::getline(ss, key, ',')
+            && std::getline(ss, value, ',')) {
+                dataset.emplace_back(operation, key, value);
+        }
+        else
+        {
+            dataset.emplace_back(operation, key, key);
         }
     }
-    gettimeofday(&end,NULL);
-    seconds = end.tv_sec - start.tv_sec;
-    useconds = end.tv_usec - start.tv_usec;
-    mtime = ((seconds) * 1000 + useconds / 1000.0) + 0.5;
-    std::cout<<"mtime:"<<mtime<<std::endl;
-    
-    // 释放内存
-    for (int i = 0; i < NUM_STRINGS; ++i) {
-        free(strings[i]);
-    }
-    free(strings);
-    cout<<cnt<<endl;
-    delete db;
 
-    return 0;
+    int times = 0;
+    struct timeval load_start,load_end,transaction_end;
+    long load_time,transaction_time;
+    gettimeofday(&load_start,NULL);
+    for (const auto& data : dataset) {
+        switch (data.op) {
+            case YCSBDataset::PUT:
+                status = db->Put(leveldb::WriteOptions(), data.key, data.value);
+                if (!status.ok()) {
+                    std::cerr << "Error: " << status.ToString() << std::endl;
+                }
+                break;
+            case YCSBDataset::GET:
+                status = db->Get(leveldb::ReadOptions(), data.key, &value);
+                if (!status.ok()) {
+                    std::cerr << "Error: " << status.ToString() << std::endl;
+                }
+                break;
+            default:
+                break;
+        }
+        times++;
+        if(times == 1048576)
+            gettimeofday(&load_end,NULL);
+    }
+    gettimeofday(&transaction_end,NULL);
+
+    load_time = (load_end.tv_sec - load_start.tv_sec)*1000 + (load_end.tv_usec - load_start.tv_usec)/1000.0;
+    transaction_time = (transaction_end.tv_sec - load_end.tv_sec)*1000 + (transaction_end.tv_usec - load_end.tv_usec)/1000.0;
+    std::cout<<"load_time : "<<load_time<<" ms"<<std::endl;
+    std::cout<<"transaction_time : "<<transaction_time<<" ms"<<std::endl;
+    
+    input.close();
+    delete db;
+    return 0;   
 }

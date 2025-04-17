@@ -1,25 +1,15 @@
 This is test 0
-status:1
-mtime:322
-mtime:17
-110000
+load_time : 2843 ms
+transaction_time : 4619 ms
 This is test 1
-status:1
-mtime:323
-mtime:17
-110000
+load_time : 2802 ms
+transaction_time : 4534 ms
 This is test 2
-status:1
-mtime:323
-mtime:17
-110000
+load_time : 2817 ms
+transaction_time : 4585 ms
 This is test 3
-status:1
-mtime:322
-mtime:17
-110000
+load_time : 2802 ms
+transaction_time : 4575 ms
 This is test 4
-status:1
-mtime:321
-mtime:17
-110000
+load_time : 2816 ms
+transaction_time : 4584 ms
