@@ -182,7 +182,7 @@ struct LEVELDB_EXPORT WriteOptions {
   // crash semantics as the "write()" system call.  A DB write
   // with sync==true has similar crash semantics to a "write()"
   // system call followed by "fsync()".
-  bool sync = false;
+  bool sync = true;
 };
 
 }  // namespace leveldb
